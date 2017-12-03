@@ -137,7 +137,7 @@ String HtmlGenerator::listEnd() {
 }
 
 String HtmlGenerator::footer() {
-  return "</body></html>";
+  return "<hr /><p style=\"font-size: 10px;\">q3home (C) by <a href=\"https://github.com/q3ok\" target=\"_blank\">q3ok</a> 2015-2018</p></body></html>";
 }
 
 

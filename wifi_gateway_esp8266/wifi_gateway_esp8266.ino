@@ -4,7 +4,9 @@
  *
  * Copyright (C) 2015-2017 q3ok
  * 
- * Configuration in configuration.h should be adjusted to your needs
+ * Configuration has to be in configuration.h
+ * Please copy configuration_example.h to configuration.h
+ * And adjust to your needs
  * 
  * Protocol:
  * From serial (at 115200)
@@ -38,18 +40,9 @@ PubSubClient mqttClient(mqttClientH);
 
 void checkWiFiConnection() {
   if ( WiFi.status() == WL_CONNECTED ) return;
-  saveLog("Lost signal, reconnecting WiFi...");
-  delay(1000);
-  WiFi.begin( ssid, password);
-  int waitForConnection = 0;
-  while ( WiFi.status() != WL_CONNECTED ) {
-    delay(500);
-    if ( ++waitForConnection > 5 ) {
-      checkWiFiConnection();
-      break;
-    }
-  }
-  saveLog("WiFi connected.");
+  saveLog("Connecting to WiFI");
+  WiFi.begin( ssid, password );
+  WiFi.config( static_ip, gateway, mask);
 }
 
 /* taken from https://github.com/zenmanenergy/ESP8266-Arduino-Examples/blob/master/helloWorld_urlencoded/urlencode.ino */
@@ -139,7 +132,7 @@ void parseInputData(String input) {
   t3 = input.substring(t2d + 1, input.length());
 
   if (!isSensorNameOk(t2)) return;
-
+  
   String fname = dir_sensors;
   fname.concat(t2);
   fname.concat(".txt");
@@ -147,10 +140,12 @@ void parseInputData(String input) {
   f.println(t3);
   f.close();
 
+  yield();
   if (conf.get("mqtton").toInt() == 1) {
     postDataToMQTT(t2, t3);
   }
 
+  yield();
   if (conf.get("sendon").toInt() == 1) {
     postDataToUrl(t2, t3);
   }
@@ -217,6 +212,7 @@ void handleFormatRequest() {
   } else {
     resp = "Factory reset FAILED";
   }
+  resp += " | Please reset the device.";
   server.send(200, "text/plain", resp);
 
 }
@@ -226,6 +222,7 @@ void handleGetAllSensorsData() {
   String resp = "";
   String temp;
   while (dirH.next()) {
+    yield();
     resp += dirH.fileName().substring(0,dirH.fileName().indexOf(".txt"));
     resp += "|";
     File f = dirH.openFile("r");
@@ -344,6 +341,7 @@ void handleConfig() {
     sendurl = conf.get("sendurl");
   }
 
+  yield();
   if (server.arg("submit").length() > 0) {
     /* lets save the configuration !*/
     conf.autosave(AUTOSAVE_OFF);
@@ -440,12 +438,17 @@ void handleRoot() {
   resp += "<script type=\"text/javascript\">function requestReset() { var pass = prompt(\"Please enter password\"); document.location.href = \"/format?pass=\" + pass; }</script>";
   
   resp += HtmlGenerator::h(1, "SPI <-> MQTT Gateway");
-  resp += HtmlGenerator::divStart();
+  resp += HtmlGenerator::divStart("width: 200px");
+  resp += HtmlGenerator::listStart();
+  resp += HtmlGenerator::listItem( HtmlGenerator::a("Show log", "/pure?r=/log.txt") );
+  resp += HtmlGenerator::listItem( HtmlGenerator::a("Show data from all sensors", "/alldata") );
+  resp += HtmlGenerator::listItem( HtmlGenerator::a("Browse SPIFFS", "/browse?dir=/") );
+  resp += HtmlGenerator::listEnd();
   resp += HtmlGenerator::listStart();
   resp += HtmlGenerator::listItem( HtmlGenerator::a("Configuration", "/config") );
-  resp += HtmlGenerator::listItem( HtmlGenerator::a("Browse", "/browse?dir=/") );
-  resp += HtmlGenerator::listItem( HtmlGenerator::a("All sensors", "/alldata") );
-  resp += HtmlGenerator::listItem( HtmlGenerator::a("Factory reset", "javascript:requestReset()") );
+  resp += HtmlGenerator::listEnd();
+  resp += HtmlGenerator::listStart();
+  resp += HtmlGenerator::listItem( HtmlGenerator::a("Factory reset (Format SPIFFS)", "javascript:requestReset()") );
   resp += HtmlGenerator::listEnd();
   resp += HtmlGenerator::divEnd();
   resp += HtmlGenerator::footer();
@@ -455,13 +458,23 @@ void handleRoot() {
 }
 
 void mqttReconnect() {
-  if (!mqttClient.connected()) {
-    IPAddress mqtt_server;
-    mqtt_server.fromString(conf.get("mqttserver"));
-    int mqtt_port = conf.get("mqttport").toInt();
-    mqttClient.setServer(mqtt_server, mqtt_port);
-    mqttClient.connect( String(ESP.getChipId()).c_str() );
-    delay(1000);
+  mqttClient.disconnect();
+  yield();
+  delay(200);
+  IPAddress mqtt_server;
+  mqtt_server.fromString(conf.get("mqttserver"));
+  int mqtt_port = conf.get("mqttport").toInt();
+  if (mqtt_port < 1 || mqtt_port > 65535) {
+    saveLog("Requested port " + String(mqtt_port) + " for MQTT isnt real. Follow the white rabbits.");
+    return;
+  }
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  if ( !mqttClient.connect( String(ESP.getChipId()).c_str() ) ) {
+    saveLog("Cannot connect to mqtt server (state: " + String(mqttClient.state()) + ")");
+    saveLog("Server: " + conf.get("mqttserver") + " Port: " + String(mqtt_port));
+    saveLog("Please refer to https://pubsubclient.knolleary.net/api.html#state");
+  } else {
+    saveLog("Connected to MQTT server " + conf.get("mqttserver") + " at port " + String(mqtt_port));
   }
 }
 
@@ -477,11 +490,8 @@ void setup() {
   clearLog();
   Serial.begin(115200);
 
-  saveLog("Connecting to AP");
-
   WiFi.mode(WIFI_STA);
-  WiFi.begin( ssid, password );
-  WiFi.config( static_ip, gateway, mask);
+  checkWiFiConnection(); 
   while ( WiFi.status() != WL_CONNECTED ) {
     yield();
     delay(500);
@@ -496,23 +506,27 @@ void setup() {
   server.on( "/format", handleFormatRequest );
   server.on( "/config", handleConfig );
   
-  server.onNotFound ( handleNotFound );
+  server.onNotFound( handleNotFound );
   server.begin();
 
   saveLog("Server started");
 
   if (conf.get("mqtton").toInt() == 1) {
     mqttReconnect();
-    saveLog("MQTT Connected");
   }
   
-  saveLog("Gateway READY");
+  saveLog("init done.");
 }
 
 void loop() {
   checkWiFiConnection();
   server.handleClient();
-  mqttClient.loop();
+  if (conf.get("mqtton").toInt() == 1) {
+    if ( !mqttClient.loop() ) {
+      saveLog("MQTT Disconnected!! reconnecting...");
+      mqttReconnect();
+    }
+  }
   if (Serial.available() > 0) {
     String data = Serial.readStringUntil('\n');
     data.replace('\r',' ');
